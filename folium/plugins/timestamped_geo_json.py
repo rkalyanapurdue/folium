@@ -79,15 +79,106 @@ class TimestampedGeoJson(MacroElement):
             L.Control.TimeDimensionCustom = L.Control.TimeDimension.extend({
                 _getDisplayDateFormat: function(date){
                     var newdate = new moment(date);
-                    console.log(newdate)
                     return newdate.format("{{this.date_options}}");
+                },
+                _update: function() {
+                  if (!this._timeDimension) {
+                      return; 
+                  }
+                  var time = this._timeDimension.getCurrentTime();
+                    var date = new Date(time);
+                      if (this._displayDate) {
+                        L.DomUtil.removeClass(this._displayDate, 'loading');
+                        this._displayDate.innerHTML = this._getDisplayDateFormat(date);
+                    }
+                    if (this._sliderTime && !this._slidingTimeSlider) {
+                        this._sliderTime.setValue(this._timeDimension.getCurrentTimeIndex());
+                    }
+            }
+            });
+            L.TimeDimension.Layer.GeoJsonCustom = L.TimeDimension.Layer.GeoJson.extend({
+                _getFeatureTimes: function(feature) {
+                    if (!feature.featureTimes) {
+                        if (!feature.properties) {
+                            feature.featureTimes = [];
+                        } else if (feature.properties.hasOwnProperty('coordTimes')) {
+                            feature.featureTimes = feature.properties.coordTimes;
+                        } else if (feature.properties.hasOwnProperty('times')) {
+                            feature.featureTimes = feature.properties.times;
+                        } else if (feature.properties.hasOwnProperty('linestringTimestamps')) {
+                            feature.featureTimes = feature.properties.linestringTimestamps;
+                        } else if (feature.properties.hasOwnProperty('time')) {
+                            feature.featureTimes = [feature.properties.time];
+                        } else {
+                            feature.featureTimes = [];
+                        }
+                        // String dates to ms
+                        for (var i = 0, l = feature.featureTimes.length; i < l; i++) {
+                            var time = feature.featureTimes[i];
+                            if (typeof time == 'string' || time instanceof String) {
+                                time = Date.parse(time.trim());
+                                feature.featureTimes[i] = time;
+                            }
+                        }
+                    }
+                    return feature.featureTimes;
+                },
+                _getFeatureBetweenDates: function(feature, minTime, maxTime) {
+                    //change min value to allow for dates before 01/01/1970
+                    if (minTime == 0) {
+                        minTime = -999999999999;
+                    }
+                    var featureTimes = this._getFeatureTimes(feature);
+                    if (featureTimes.length == 0) {
+                        return feature;
+                    }
+
+                    var index_min = null,
+                        index_max = null,
+                        l = featureTimes.length;
+
+                    if (featureTimes[0] > maxTime || featureTimes[l - 1] < minTime) {
+                        return null;
+                    }
+
+                    if (featureTimes[l - 1] > minTime) {
+                        for (var i = 0; i < l; i++) {
+                            if (index_min === null && featureTimes[i] > minTime) {
+                                // set index_min the first time that current time is greater the minTime
+                                index_min = i;
+                            }
+                            if (featureTimes[i] > maxTime) {
+                                index_max = i;
+                                break;
+                            }
+                        }
+                    }
+                    if (index_min === null) {
+                        index_min = 0;
+                    }
+                    if (index_max === null) {
+                        index_max = l;
+                    }
+                    var new_coordinates = [];
+                    if (feature.geometry.coordinates[0].length) {
+                        new_coordinates = feature.geometry.coordinates.slice(index_min, index_max);
+                    } else {
+                        new_coordinates = feature.geometry.coordinates;
+                    }
+                    return {
+                        type: 'Feature',
+                        properties: feature.properties,
+                        geometry: {
+                            type: feature.geometry.type,
+                            coordinates: new_coordinates
+                        }
+                    };
                 }
+
             });
             {{this._parent.get_name()}}.timeDimension = L.timeDimension({period:"{{this.period}}"});
             var timeDimensionControl = new L.Control.TimeDimensionCustom({{ this.options }});
             {{this._parent.get_name()}}.addControl(this.timeDimensionControl);
-
-            console.log("{{this.marker}}");
 
             var geoJsonLayer = L.geoJson({{this.data}}, {
                     pointToLayer: function (feature, latLng) {
@@ -120,7 +211,7 @@ class TimestampedGeoJson(MacroElement):
                     }
                 })
 
-            var {{this.get_name()}} = L.timeDimension.layer.geoJson(geoJsonLayer,
+            var {{this.get_name()}} = new L.TimeDimension.Layer.GeoJsonCustom(geoJsonLayer,
                 {updateTimeDimension: true,
                  addlastPoint: {{'true' if this.add_last_point else 'false'}},
                  duration: {{ this.duration }},

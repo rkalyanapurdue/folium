@@ -97,6 +97,107 @@ class TimestampedGeoJson(MacroElement):
             }
             });
             L.TimeDimension.Layer.GeoJsonCustom = L.TimeDimension.Layer.GeoJson.extend({
+
+		initialize: function(layer, options) {
+        	    L.TimeDimension.Layer.prototype.initialize.call(this, layer, options);
+        	    this._updateTimeDimension = this.options.updateTimeDimension || false;
+        	    this._updateTimeDimensionMode = this.options.updateTimeDimensionMode || 'extremes'; // 'union', 'replace' or extremes
+        	    this._duration = this.options.duration || null;
+        	    this._addlastPoint = this.options.addlastPoint || false;
+        	    this._waitForReady = this.options.waitForReady || false;
+        	    this._defaultTime = 0;
+        	    this._availableTimes = [];
+        	    this._loaded = false;
+		    this._size = 10;
+		    this._prevMin = -999999999999;
+        	    if (this._baseLayer.getLayers().length == 0) {
+            		if (this._waitForReady){
+                		this._baseLayer.on("ready", this._onReadyBaseLayer, this);
+            		}else{
+                		this._loaded = true;
+            		}
+        	    } else {
+            		this._loaded = true;
+            		this._setAvailableTimes();
+        	    }
+        	    // reload available times if data is added to the base layer
+        	    this._baseLayer.on('layeradd', (function () {
+            		if (this._loaded) {
+                	this._setAvailableTimes();
+            		}
+        	    }).bind(this));
+    		},
+    		_update: function() {
+        		if (!this._map)
+            		return;
+        		if (!this._loaded) {
+            		return;
+        		}
+
+        		var time = this._timeDimension.getCurrentTime();
+
+        		var maxTime = this._timeDimension.getCurrentTime(),
+            		    minTime = 0;
+        		if (this._duration) {
+            		var date = new Date(maxTime);
+            		L.TimeDimension.Util.subtractTimeDuration(date, this._duration, true);
+            		minTime = date.getTime();
+        		}
+
+        	// new coordinates:
+        	var layer = L.geoJson(null, this._baseLayer.options);
+        	var layers = this._baseLayer.getLayers();
+		var hm_data = { data:[] };
+        	for (var i = 0, l = layers.length; i < l; i++) {
+            		var feature = this._getFeatureBetweenDates(layers[i].feature, minTime, maxTime);
+            	if (feature) {
+                	layer.addData(feature);
+			if (feature.geometry.type == 'MultiPoint') {
+				hm_data.data.push({lat: parseFloat(feature.geometry.coordinates[0][1]), lng: parseFloat(feature.geometry.coordinates[0][0]), count: parseFloat(feature.properties.size_num)});
+			}
+                	if (this._addlastPoint && feature.geometry.type == "LineString") {
+                    		if (feature.geometry.coordinates.length > 0) {
+                        		var properties = feature.properties;
+                        		properties.last = true;
+                        		layer.addData({
+                            			type: 'Feature',
+                            			properties: properties,
+                            			geometry: {
+                                			type: 'Point',
+                                			coordinates: feature.geometry.coordinates[feature.geometry.coordinates.length - 1]
+                            			}
+                        			});
+                    			}
+                		}
+            		}
+        	}
+
+		var heatmapCfg = {
+                    radius: 0.5,
+                    maxOpacity: 0.5,
+                    scaleRadius: true,
+                    useLocalExtrema: false,
+                    latField: 'lat',
+                    lngField: 'lng',
+                    valueField: 'count',
+                    defaultWeight : 1,
+                };
+                var hm_layer = new HeatmapOverlay(heatmapCfg);
+
+  		hm_layer.setData(hm_data);
+
+        	if (this._currentLayer) {
+            		this._map.removeLayer(this._currentLayer);
+			this._map.removeLayer(this._hmLayer);
+        	}
+        	if (layer.getLayers().length) {
+            		layer.addTo(this._map);
+			hm_layer.addTo(this._map);
+            		this._currentLayer = layer;
+			this._hmLayer = hm_layer;
+        	}
+		 this._prevMin = maxTime;
+    		},
                 _getFeatureTimes: function(feature) {
                     if (!feature.featureTimes) {
                         if (!feature.properties) {
@@ -127,6 +228,9 @@ class TimestampedGeoJson(MacroElement):
                     //change min value to allow for dates before 01/01/1970
                     if (minTime == 0) {
                         minTime = -999999999999;
+			if (feature.geometry.type == 'MultiPoint') {
+				minTime = maxTime;
+			}
                     }
                     var featureTimes = this._getFeatureTimes(feature);
                     if (featureTimes.length == 0) {
@@ -165,6 +269,10 @@ class TimestampedGeoJson(MacroElement):
                     } else {
                         new_coordinates = feature.geometry.coordinates;
                     }
+		    this._size = this._map.getZoom() * 3;
+		    if(feature.properties.iconstyle) {
+			feature.properties.iconstyle['iconSize'] = [this._size,this._size];
+		    }
                     return {
                         type: 'Feature',
                         properties: feature.properties,
@@ -184,8 +292,13 @@ class TimestampedGeoJson(MacroElement):
                     pointToLayer: function (feature, latLng) {
                         if (feature.properties.icon == 'marker') {
                             if(feature.properties.iconstyle){
-                                return new L.Marker(latLng, {
-                                    icon: L.icon(feature.properties.iconstyle)});
+				//console.log(feature.properties.iconstyle);
+				var my_icon = L.icon(feature.properties.iconstyle);
+				//my_icon.options.iconSize = [10,10];
+                                var marker = new L.Marker(latLng, {
+                                    icon: my_icon,title: feature.properties.divID});
+				marker.bindPopup(feature.properties.size);
+				return marker;
                             }
                             //else
                             return new L.Marker(latLng);
@@ -289,6 +402,15 @@ class TimestampedGeoJson(MacroElement):
         figure.header.add_child(
             JavascriptLink('https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.18.1/moment.min.js'),
             name='moment')
+
+        figure.header.add_child(
+            JavascriptLink(
+                'https://rawgit.com/python-visualization/folium/master/folium/templates/pa7_hm.min.js'),  # noqa
+            name='heatmap.min.js')
+
+        figure.header.add_child(
+            JavascriptLink('https://rawgit.com/pa7/heatmap.js/develop/plugins/leaflet-heatmap/leaflet-heatmap.js'),  # noqa
+            name='leaflet-heatmap.js')
 
     def _get_self_bounds(self):
         """
